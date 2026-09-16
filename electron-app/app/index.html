@@ -357,7 +357,10 @@
     background: radial-gradient(circle at 50% 40%, #263524, #10160d 78%);
     position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden;
   }
-  .camview__frame { width: 72%; height: 55%; border: 2px dashed rgba(255,255,255,0.55); border-radius: 18px; display: flex; align-items: center; justify-content: center; }
+  .camview__video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: none; }
+  .camview.has-camera .camview__video { display: block; }
+  .camview.has-camera .camview__frame svg { display: none; }
+  .camview__frame { width: 72%; height: 55%; border: 2px dashed rgba(255,255,255,0.55); border-radius: 18px; display: flex; align-items: center; justify-content: center; position: relative; z-index: 1; }
   .camview__frame svg { width: 46px; height: 46px; color: rgba(255,255,255,0.75); }
   .camview__hint { position: absolute; bottom: 14px; left: 0; right: 0; text-align: center; color: rgba(255,255,255,0.85); font-size: 0.75rem; }
   .camview__scanline { position: absolute; left: 8%; right: 8%; height: 2px; background: var(--accent-strong); box-shadow: 0 0 12px 2px var(--accent-strong); opacity: 0; }
@@ -376,6 +379,7 @@
   .result-card { text-align: center; padding: 26px 18px 10px; }
   .result-badge { width: 64px; height: 64px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-strong); display: flex; align-items: center; justify-content: center; margin: 0 auto 14px; }
   .result-badge svg { width: 30px; height: 30px; }
+  .result-photo { width: 128px; height: 128px; object-fit: cover; border-radius: 20px; margin: 0 auto 14px; display: block; }
   .result-name { font-size: 1.2rem; font-weight: 800; }
   .result-tag { display: inline-block; margin-top: 6px; background: var(--gold-soft); color: var(--gold-ink); font-size: 0.72rem; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
   .result-note { text-align: left; margin: 20px 4px 0; background: var(--surface-alt); border-radius: var(--radius-md); padding: 14px 16px; font-size: 0.85rem; line-height: 1.55; color: var(--ink); }
@@ -736,10 +740,12 @@
         <div class="subhead"><button class="backbtn" data-back><svg class="icon"><use href="#i-back" /></svg></button><h2>카메라로 분리배출 확인</h2></div>
         <div class="screen__body" style="padding:0 0 16px;">
           <div class="camview" id="camview">
+            <video class="camview__video" id="camVideo" autoplay playsinline muted></video>
             <div class="camview__frame"><svg viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.6"><use href="#i-camera" /></svg></div>
             <div class="camview__scanline"></div>
-            <div class="camview__hint">배출할 품목을 프레임 안에 맞춰주세요</div>
+            <div class="camview__hint" id="camHint">배출할 품목을 프레임 안에 맞춰주세요</div>
           </div>
+          <canvas id="camCanvas" hidden></canvas>
           <p class="camstatus" id="camStatus">촬영 버튼을 눌러 스캔을 시작하세요</p>
           <div class="shutter-row"><button class="shutter" id="shutterBtn" aria-label="촬영"><span class="shutter__dot"></span></button></div>
         </div>
@@ -750,7 +756,8 @@
         <div class="subhead"><button class="backbtn" data-back><svg class="icon"><use href="#i-back" /></svg></button><h2>스캔 결과</h2></div>
         <div class="screen__body">
           <div class="result-card">
-            <div class="result-badge"><svg viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.8"><use href="#i-check" /></svg></div>
+            <img class="result-photo" id="resultPhoto" alt="" hidden />
+            <div class="result-badge" id="resultBadge"><svg viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.8"><use href="#i-check" /></svg></div>
             <div class="result-name" id="resultName">PET병 (투명)</div>
             <span class="result-tag" id="resultTag">재활용 가능</span>
           </div>
@@ -952,6 +959,8 @@
   var scanTimer = null;
   var lastScanItem = null;
   var reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var camStream = null;
+  var lastPhoto = null;
 
   function $(sel, root) { return (root || document).querySelector(sel); }
   function $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
@@ -1000,6 +1009,46 @@
     if (name === "steps") renderSteps();
     if (name === "guide") renderGuide();
     if (name === "search") renderSearch("");
+    if (name === "camera") startCamera(); else stopCamera();
+  }
+
+  function startCamera() {
+    var video = $("#camVideo"), cam = $("#camview"), hint = $("#camHint");
+    if (camStream || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        hint.textContent = "이 환경에서는 카메라를 사용할 수 없어요";
+      }
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
+      .then(function (stream) {
+        camStream = stream;
+        video.srcObject = stream;
+        cam.classList.add("has-camera");
+        hint.textContent = "배출할 품목을 프레임 안에 맞춰주세요";
+      })
+      .catch(function () {
+        cam.classList.remove("has-camera");
+        hint.textContent = "카메라 접근이 거부됐어요 · 설정에서 카메라 권한을 허용해주세요";
+      });
+  }
+
+  function stopCamera() {
+    if (!camStream) return;
+    camStream.getTracks().forEach(function (t) { t.stop(); });
+    camStream = null;
+    var cam = $("#camview"), video = $("#camVideo");
+    cam.classList.remove("has-camera");
+    video.srcObject = null;
+  }
+
+  function capturePhoto() {
+    var video = $("#camVideo"), canvas = $("#camCanvas");
+    if (!camStream || !video.videoWidth) return null;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.85);
   }
 
   function renderMileage() {
@@ -1244,6 +1293,7 @@
 
   function startScan() {
     var cam = $("#camview"), btn = $("#shutterBtn"), status = $("#camStatus");
+    lastPhoto = capturePhoto();
     cam.classList.add("is-scanning");
     btn.disabled = true;
     status.textContent = "스캔 중이에요…";
@@ -1257,6 +1307,15 @@
       $("#resultTag").textContent = lastScanItem.tag;
       $("#resultNote").innerHTML = lastScanItem.note;
       $("#resultPoints").textContent = "+" + fmt(lastScanItem.points) + "P";
+      var photo = $("#resultPhoto"), badge = $("#resultBadge");
+      if (lastPhoto) {
+        photo.src = lastPhoto;
+        photo.hidden = false;
+        badge.hidden = true;
+      } else {
+        photo.hidden = true;
+        badge.hidden = false;
+      }
       var creditBtn = $("#creditBtn");
       creditBtn.disabled = false;
       creditBtn.textContent = "마일리지 적립하기";
